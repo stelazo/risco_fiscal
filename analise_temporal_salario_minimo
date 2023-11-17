@@ -1,0 +1,181 @@
+# Create to: Stephany Lazo 
+
+rm(list = ls())
+#Pacotes
+library(readxl)
+library(tidyverse)
+library(tidyr)
+library(moments)
+library(tseries)
+library(trend)
+library(lubridate)
+library(forecast)
+library(stats)
+library(lmtest)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(fields)
+library(gridExtra)
+
+
+########################### Importando dados ######################################
+dados = read_excel("Z:/GERENCIA/DEMANDAS/2023/16. PCP/01. RISCO FISCAL/Histórico salário mínimo (2000 - 2023)_v02.xlsx", sheet = "DATAFRAME")
+
+class(dados$DATA)
+dados$DATA = as.Date(dados$DATA)
+
+#View(dados)
+
+# FILTRANDO A BASE
+dados2010 = filter(dados, format(dados$DATA, "%Y") >= 2010)
+
+
+
+################## ANALISE TEMPORAL ##########################
+SM = ts(dados2010$SM, start = c(2010, 1), end = c(2023, 8), frequency = 12)
+
+# df
+df = data.frame(Ano = time(SM), Valor = as.numeric(SM))
+
+# Criar o gráfico ggplot2
+grafico = ggplot(data = df, aes(x = Ano, y = Valor)) +
+  geom_line(color = "blue") +
+  xlab("Periodo de analise (Ano)") +
+  ylab("Salário mínimo") +
+  theme_minimal()
+grafico
+
+# Teste ADF (Augmented Dickey-Fuller)
+resultado_adf = adf.test(SM)
+cat("Teste ADF:")
+cat("Estatística do teste:", resultado_adf$statistic, "\n")
+cat("Valor p:", resultado_adf$p.value, "\n")
+
+if (resultado_adf$p.value <= 0.05) {
+  cat("A série é estacionária (rejeita-se a hipótese nula de presença deraiz unitária).\n")
+} else {
+  cat("A série é não estacionária (não se rejeita a hipótese nula depresença de raiz unitária).\n")}
+
+# Teste de Mann-Kendall
+resultado_mk_test = mk.test(SM)
+
+# Exibir os resultados do teste
+cat("Resultado do Teste de Mann-Kendall:\n")
+cat("Estatística do teste:", resultado_mk_test$statistic, "\n")
+cat("Valor p:", resultado_mk_test$p.value, "\n")
+if (resultado_mk_test$p.value <= 0.05) {
+  cat("Há evidências de tendência significativa na série.\n")
+} else {
+    cat("Não há evidências de tendência significativa na série.\n")}
+
+ndiffs(SM) # tendencia
+nsdiffs(SM) # scolunazonalidade
+diferenca_sm = diff(SM) # fazendo a diferença , tornando a serieestacionaria
+ts.plot(diferenca_sm) # plote
+adf.test(diferenca_sm) # teste de estacionariedade
+mk.test(diferenca_sm)
+
+# Realizar a decomposição clássica
+decomposicao_multiplcative = decompose(SM, type = "multiplicative")# Converter as componentes em um data frame
+decomposicao_df = data.frame(Ano = time(decomposicao_multiplcative$seasonal),
+                             Tendencia = decomposicao_multiplcative$trend,
+                             Sazonalidade = decomposicao_multiplcative$seasonal,
+                             Residuos = decomposicao_multiplcative$random)# Transformar os df em formato "long" usando gather()
+decomposicao_df_long = gather(decomposicao_df, key = "Componente", value ="Valor", -Ano)
+
+# Criar o gráfico usando ggplot2 com facet_grid()
+grafico_decomposicao_multiplcative = ggplot(data = decomposicao_df_long, aes(x = Ano,
+                                                                             y = Valor,
+                                                                             filter = Componente)) + geom_line() +
+  labs(x = NULL, y = "") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  facet_grid(rows = vars(Componente), scales = "free_y") + ggtitle("Multiplicativo") +
+  theme_minimal()
+grafico_decomposicao_multiplcative
+
+# Realizar a decomposição clássica
+decomposicao_additive = decompose(SM, type = "additive")# Converter as componentes em um data frame
+decomposicao_df_1 = data.frame(Ano = time(decomposicao_additive$seasonal), 
+                               Tendencia = decomposicao_additive$trend, 
+                               Sazonalidade = decomposicao_additive$seasonal,
+                               Residuos = decomposicao_additive$random)
+
+# Transformando os df em formato "long" usando gather()
+decomposicao_df_long.1 = gather(decomposicao_df_1,
+                                key = "Componente",
+                                value = "Valor",
+                                -Ano)
+# Gráfico com facet_grid()
+grafico_decomposicao_additive = ggplot(data = decomposicao_df_long.1, aes(x = Ano, y = Valor)) + geom_line() +
+  labs(x = NULL, y = "") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  facet_grid(rows = vars(Componente), scales = "free_y") + ggtitle("Aditivo") +
+  theme_minimal()
+grafico_decomposicao_additive
+# Exibir o gráfico
+print(grafico_decomposicao_additive + grafico_decomposicao_multiplcative)#Suavizacao exponencial
+suavizacao_ar = stlf(SM, method = "ets")
+summary(suavizacao_ar)
+plot(suavizacao_ar)
+#Graficos de autocorrelacao e autocorrelacao parcial
+acf(SM)
+pacf(SM)
+ggtsdisplay(SM)
+auto.arima(SM)
+df_treino = SM[1:115] # 70%
+df_valid = SM[116:164] # 30%
+
+# Modelo
+model = Arima(df_treino, order=c(0,0,2), seasonal = list(order = c(1, 1,0)))
+summary(model)
+coeftest(model)
+accuracy(df_treino, model$fitted)
+### previsão
+pred = forecast(model, h = 5)
+plot(pred)
+# Fazendo a previsão com base no modelo ajustado
+pred_valid = forecast(model, h = length(df_valid))
+# Plotando a previsão junto com os df de validação
+plot(pred_valid,
+     main = "Previsão do Modelo ARIMA",
+     xlab = "Periodo de analise",
+     ylab = "Número de padrões")
+lines(df_valid, col = "blue")
+legend("topleft",
+       legend = c("Previsão", "df"),
+       col=c("black", "blue"), lty=1)
+# Separando df para teste
+df_teste = df[116:164,]
+#View(df_teste)
+test.ar = ts(df_teste$Valor, start = c(2019, 08),end = c(2023, 08), frequency = 12)
+
+predicao = forecast(model, h = length(test.ar)) # df preditos do modelo
+
+# Ajustar um novo modelo STL + ETS para 5 anos (60 meses) de previsão
+novo_modelo_suavizacao = stlf(SM, method = "ets", h = length(test.ar))
+
+# Gerar previsões para 5 anos
+previsao_5_anos = forecast(novo_modelo_suavizacao)
+
+# Exibir as previsões
+print(previsao_5_anos)
+
+
+# Data frame como os valores
+comparacao_teste = data.frame(ano = df_teste$Ano, # ANO 
+                              semana_ano = df_teste$Valor, # SEMANAS 
+                              previ_ARIMA = predicao$mean, # MÉDIA DOMODELO
+                              pred_suavizacao = previsao_5_anos$mean, #MÉDIA DO SUAVIZADO
+                              df_teste_ = test.ar) # SÉRIE TRANSFORMADAPARA TESTE
+
+ggplot(comparacao_teste, aes(x = semana_ano)) +
+  geom_line(aes(y = previ_ARIMA, color = "Previsão ARIMA")) +
+  geom_line(aes(y = pred_suavizacao, color = "Previsão Suavização")) + 
+  geom_line(aes(y = df_teste_, color = "df de Teste")) +
+  labs(title = "Comparação de Previsões e df de Teste", x = "Ano - Mes", y = "Particulas Inalaveis Finas") +
+  scale_color_manual(values = c("Previsão ARIMA" = "blue", "Previsão Suavização" = "green", "df de Teste" = "red")) + theme_minimal()
+comparacao_teste
+
